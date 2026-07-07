@@ -1210,6 +1210,22 @@
       -webkit-overflow-scrolling: touch;
     }
 
+    .press-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+    }
+
+    .press-grid .press-link-card {
+      flex: none;
+      width: auto;
+      aspect-ratio: 4 / 3;
+    }
+
+    .press-grid .press-link-label {
+      font-size: 12.5px;
+    }
+
     .press-link-card {
       position: relative;
       display: block;
@@ -5003,7 +5019,6 @@
         `;
       }).join("");
       section.hidden = false;
-      startPressAutoplayFor(list);
     }
 
     function renderMediaTab(row) {
@@ -5012,7 +5027,7 @@
           ${pressLinksSection(row)}
           <section class="live-section" id="facebookSection" aria-label="Umut-Sen Facebook paylaşımları" hidden>
             <h3>Umut-Sen Facebook'ta</h3>
-            <div class="press-link-list" id="fbPostList"></div>
+            <div class="press-grid" id="fbPostList"></div>
           </section>
           <section class="live-section" aria-label="Umut-Sen paylaşımları">
             <h3>Umut-Sen Paylaşımları</h3>
