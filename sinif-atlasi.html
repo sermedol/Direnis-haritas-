@@ -6428,7 +6428,7 @@
         yontem: value(row, fields.method),
         durum: value(row, fields.status),
         sonGelisme: value(row, fields.latest),
-        teyit: row.verification.label,
+        teyit: row.verification.reason,
         iliskiliKayitlar: relationData(row).relations.slice(0, 8).map((item) => ({
           baslik: value(item.row, fields.title),
           puan: item.score,
