@@ -1869,6 +1869,7 @@
     .item-karma { border-left-color: var(--amber); }
 
     .pin {
+      position: relative;
       display: block;
       width: 24px;
       height: 24px;
@@ -3542,6 +3543,7 @@
     const PREF_KEY = "sinif-atlasi-tercihler";
     const HIDDEN_MEDIA_KEY = "sinif-atlasi-gizli-medya";
     const MEDIA_CACHE_KEY = "sinif-atlasi-medya-onbellek";
+    const GEOCODE_CACHE_KEY = "sinif-atlasi-adres-konum";
     const MEDIA_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
     const MEDIA_REFRESH_MS = 90000;
     const MEDIA_PREFETCH_LIMIT = 10;
@@ -3657,6 +3659,7 @@
       title: "Başlık",
       location: "Yer",
       actors: "Sendika/Dernek/Kurum",
+      sector: "İşkolu",
       reason: "Neden/Talepler",
       startDate: "Başlangıç tarihi",
       time: "Zaman/Gün",
@@ -3814,6 +3817,7 @@
       "Başlık": ["Başlık", "Baslik", "Ne", "Direniş", "Direniş adı", "Direnis", "Direnis adi"],
       "Yer": ["Yer", "Nerede", "Lokasyon", "Şehir", "Sehir"],
       "Sendika/Dernek/Kurum": ["Sendika/Dernek/Kurum", "Sendika/ Dernek/ Kurum", "Özne", "Ozne", "Kim", "Aktörler", "Aktorler", "Sendika"],
+      "İşkolu": ["İşkolu", "Iskolu", "İş kolu", "Sektör", "Sektor"],
       "Neden/Talepler": ["Neden/Talepler", "Neden", "Talep", "Talepler", "Gerekçe", "Gerekce"],
       "Başlangıç tarihi": ["Başlangıç tarihi", "Baslangic tarihi", "Başlangıç", "Baslangic", "Tarih"],
       "Zaman/Gün": ["Zaman/Gün", "Zaman/Gun", "Ne zaman / kaçıncı gün", "Güncel zaman/gün", "Guncel zaman/gun", "Ne zaman", "Kaçıncı gün", "Kacinci gun", "Süre", "Sure"],
@@ -4029,8 +4033,8 @@
       const text = norm(area);
       if (text.includes("dunya")) return "dunya";
       if (text.includes("ekoloji")) return "ekoloji";
-      if (text.includes("adalet")) return "adalet";
-      if (text.includes("emek")) return "emek";
+      if (text.includes("hapishane") || text.includes("kayip") || text.includes("cinayeti") || text.includes("adalet")) return "adalet";
+      if (text.includes("isci") || text.includes("emek")) return "emek";
       return text.includes("/") ? "karma" : "karma";
     }
 
@@ -4087,6 +4091,81 @@
         lat >= 30 && lat <= 46 && lng >= 18 && lng <= 50;
     }
 
+    // "Konum" sütununa girilen açık adresleri gerçek koordinata çevirir.
+    // Nominatim'in ücretsiz kullanım politikasına uymak için: sonuçlar
+    // localStorage'da kalıcı önbelleğe alınır (bir adres bir kez sorgulanır),
+    // istekler arka planda ve aralıklı gönderilir, açık kart asla beklemez.
+    const geocodeCache = (function loadGeocodeCache() {
+      try {
+        const raw = localStorage.getItem(GEOCODE_CACHE_KEY);
+        return raw ? JSON.parse(raw) : {};
+      } catch {
+        return {};
+      }
+    })();
+
+    function saveGeocodeCache() {
+      try { localStorage.setItem(GEOCODE_CACHE_KEY, JSON.stringify(geocodeCache)); } catch {}
+    }
+
+    function konumTextFor(row) {
+      const keys = Object.keys(row).reduce((acc, key) => { acc[norm(key)] = key; return acc; }, {});
+      return String(row[keys.konum] || "").trim();
+    }
+
+    const GEOCODE_RETRY_MS = 24 * 60 * 60 * 1000;
+    function isUsableGeocodeEntry(entry) {
+      // Başarılı sonuç: {lat,lng} kalıcı olarak güvenilir kabul edilir.
+      // Başarısız deneme: 24 saat içinde tekrar denenmesin diye zaman
+      // damgasıyla saklanır, ama süre dolunca yeniden denenir (worker
+      // güncellenmiş veya geçici bir sorun düzelmiş olabilir).
+      if (!entry) return false;
+      if (Number.isFinite(entry.lat) && Number.isFinite(entry.lng)) return true;
+      return Boolean(entry.failedAt) && (Date.now() - entry.failedAt < GEOCODE_RETRY_MS);
+    }
+
+    async function geocodeAddress(address) {
+      const key = norm(address);
+      if (isUsableGeocodeEntry(geocodeCache[key])) return geocodeCache[key];
+      try {
+        const response = await fetchWithTimeout(
+          `https://sinif-atlasi.feyzakayaalti.workers.dev/?geocode=${encodeURIComponent(address)}`,
+          {}, 8000, { background: true }
+        );
+        const data = await response.json();
+        geocodeCache[key] = (data && data.result) || { failedAt: Date.now() };
+      } catch {
+        geocodeCache[key] = { failedAt: Date.now() };
+      }
+      saveGeocodeCache();
+      return geocodeCache[key];
+    }
+
+    let geocodeQueueRunning = false;
+    async function geocodeMissingAddressesInBackground() {
+      if (geocodeQueueRunning) return;
+      geocodeQueueRunning = true;
+      try {
+        const seen = new Set();
+        for (const row of cases) {
+          if (explicitPoint(row)) continue;
+          const address = konumTextFor(row);
+          if (address.length < 12) continue;
+          const key = norm(address);
+          if (seen.has(key) || isUsableGeocodeEntry(geocodeCache[key])) continue;
+          seen.add(key);
+          const result = await geocodeAddress(address);
+          if (result && isPlausibleCoord(result.lat, result.lng)) {
+            rebuildPoints();
+            render();
+          }
+          await new Promise((resolve) => window.setTimeout(resolve, 1100));
+        }
+      } finally {
+        geocodeQueueRunning = false;
+      }
+    }
+
     function explicitPoint(row) {
       const keys = Object.keys(row).reduce((acc, key) => {
         acc[norm(key)] = key;
@@ -4105,6 +4184,13 @@
         const lat = Number(konumMatch[1].replace(",", "."));
         const lng = Number(konumMatch[2].replace(",", "."));
         if (isPlausibleCoord(lat, lng)) return [{ label: value(row, fields.location), lat, lng }];
+      }
+      if (konumText) {
+        const cacheKey = norm(konumText);
+        const cached = geocodeCache[cacheKey];
+        if (cached && isPlausibleCoord(cached.lat, cached.lng)) {
+          return [{ label: value(row, fields.location), lat: cached.lat, lng: cached.lng }];
+        }
       }
       return null;
     }
@@ -4220,15 +4306,22 @@
           mapMarkerEls.push(marker);
         } else {
           const entry = feature.properties.entry;
+          // MapLibre, marker'ın KÖK elemanına konumlandırma transform'unu
+          // inline stille uygular — bu, .pin sınıfının kendi
+          // transform:rotate(-45deg) ile oluşturduğu damla şeklini ezer.
+          // Bu yüzden .pin'i, MapLibre'nin konumlandırdığı nötr bir dış
+          // kapsayıcının İÇİNE koyuyoruz; dönüş şekli böylece korunur.
+          const wrap = document.createElement("div");
           const el = document.createElement("span");
           el.className = `pin pin-${entry.row.category}`;
           el.setAttribute("aria-hidden", "true");
+          wrap.appendChild(el);
           const popup = new maplibregl.Popup({ closeButton: true, maxWidth: "260px", offset: 18 }).setHTML(popupFor(entry));
           popup.on("open", () => {
             const button = document.querySelector(`[data-open-case="${entry.row.id}"]`);
             if (button) button.addEventListener("click", () => selectCase(entry.row.id, { focusMap: false }));
           });
-          const marker = new maplibregl.Marker({ element: el, anchor: "bottom" })
+          const marker = new maplibregl.Marker({ element: wrap, anchor: "bottom" })
             .setLngLat([lng, lat])
             .setPopup(popup)
             .addTo(map);
@@ -4844,6 +4937,7 @@
           </div>
           ${locationSection(row)}
           ${claim("Sendika/Dernek/Kurum", value(row, fields.actors))}
+          ${claim("İşkolu", value(row, fields.sector))}
           ${claim("Neden/Talepler", value(row, fields.reason))}
           ${claim("Başlangıç tarihi", value(row, fields.startDate))}
           ${claim("Zaman/Gün", value(row, fields.time))}
@@ -6757,6 +6851,7 @@
         selectedId = cases[0]?.id || null;
       }
       render();
+      geocodeMissingAddressesInBackground();
     }
 
     function renderOverview(row) {
@@ -6765,6 +6860,7 @@
           ${claim("Alan", value(row, fields.area))}
           ${claim("Yer", value(row, fields.location))}
           ${claim("Sendika/Dernek/Kurum", value(row, fields.actors))}
+          ${claim("İşkolu", value(row, fields.sector))}
           ${claim("Neden/Talepler", value(row, fields.reason))}
           ${claim("Başlangıç tarihi", value(row, fields.startDate))}
           ${claim("Zaman/Gün", value(row, fields.time))}

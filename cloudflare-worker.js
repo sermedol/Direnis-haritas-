@@ -34,6 +34,15 @@ export default {
       return handleSocial(requestUrl, env);
     }
 
+    // "Konum" sütunundaki açık adresleri OpenStreetMap'in ücretsiz Nominatim
+    // servisiyle koordinata çevirir. Sonuç Cloudflare'ın kenar (edge)
+    // önbelleğinde uzun süre tutulur — aynı adres binlerce ziyaretçi
+    // tarafından açılsa bile Nominatim'e sadece BİR kez istek gider
+    // (kullanım politikasına saygılı kalmak için).
+    if (requestUrl.searchParams.has("geocode")) {
+      return handleGeocode(requestUrl);
+    }
+
     const target = requestUrl.searchParams.get("url");
     if (!target || !/^https?:\/\//i.test(target)) {
       return new Response("Eksik veya geçersiz 'url' parametresi.", {
@@ -187,6 +196,40 @@ async function handleSocial(requestUrl, env) {
     });
   } catch (error) {
     return new Response(JSON.stringify({ error: "Sosyal medya isteği başarısız: " + error.message }), {
+      status: 502,
+      headers: { ...corsHeaders(), "Content-Type": "application/json" }
+    });
+  }
+}
+
+async function handleGeocode(requestUrl) {
+  const address = requestUrl.searchParams.get("geocode");
+  if (!address || address.trim().length < 4) {
+    return new Response(JSON.stringify({ error: "Geçersiz adres." }), {
+      status: 400,
+      headers: { ...corsHeaders(), "Content-Type": "application/json" }
+    });
+  }
+  const nominatimUrl = `https://nominatim.openstreetmap.org/search` +
+    `?q=${encodeURIComponent(address)}&format=jsonv2&limit=1&countrycodes=tr`;
+  try {
+    const upstream = await fetch(nominatimUrl, {
+      headers: {
+        // Nominatim kullanım politikası, tanımlayıcı bir User-Agent zorunlu kılar.
+        "User-Agent": "DirenisHaritasi/1.0 (https://direnis-haritasi.umutsen.org)"
+      },
+      // 30 gün: adresler değişmediği için Cloudflare kenarında uzun süre
+      // önbelleğe alınır, Nominatim'e tekrar tekrar gidilmez.
+      cf: { cacheTtl: 2592000, cacheEverything: true }
+    });
+    const data = await upstream.json();
+    const first = Array.isArray(data) ? data[0] : null;
+    const result = first ? { lat: Number(first.lat), lng: Number(first.lon) } : null;
+    return new Response(JSON.stringify({ result }), {
+      headers: { ...corsHeaders(), "Content-Type": "application/json", "Cache-Control": "public, max-age=2592000" }
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({ error: "Geocode isteği başarısız: " + error.message }), {
       status: 502,
       headers: { ...corsHeaders(), "Content-Type": "application/json" }
     });
