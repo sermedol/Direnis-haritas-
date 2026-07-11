@@ -4457,7 +4457,16 @@
       const marker = L.marker([entry.point.lat, entry.point.lng], {
         icon: iconFor(entry.row),
         title: value(entry.row, fields.title)
-      }).bindPopup(popupFor(entry));
+      }).bindPopup(popupFor(entry), {
+        // Haritanın üstündeki "Görüneni Sığdır"/"Türkiye" düğmeleri (HUD)
+        // sabit konumlu — Leaflet bunların yerini bilmediği için, üstteki
+        // bir marker'ın popup'ı otomatik kaydırma (autoPan) sırasında
+        // düğmelerin ARKASINDA kalabiliyordu. Bu boşluk, popup'ın her zaman
+        // HUD'un altında/görünür kalmasını sağlar (özellikle mobilde, HUD
+        // düğmeleri iki satıra sarabildiği için üst boşluk geniş tutuldu).
+        autoPanPaddingTopLeft: [12, 96],
+        autoPanPaddingBottomRight: [12, 12]
+      });
       marker.on("popupopen", () => {
         const button = document.querySelector(`[data-open-case="${entry.row.id}"]`);
         if (button) button.addEventListener("click", () => selectCase(entry.row.id, { focusMap: false }));
