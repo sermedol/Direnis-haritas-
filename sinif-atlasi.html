@@ -68,6 +68,11 @@
          kenarlardan içerik kesiliyordu. Bu, o karışıklığın sonucu oluşan
          yatay taşmayı her koşulda engeller. */
       overflow-x: hidden;
+      /* iOS/Android'in "lastik gibi geri sekme" (overscroll bounce) efekti:
+         listenin/sayfanın en üstünde veya en altında daha fazla kaydırınca
+         tüm ekran (arka plan gradyanı dahil) hafifçe kayıp geri sekiyordu.
+         Bunu tamamen kapatır — hiçbir etkileşimde ekran/arka plan kaymaz. */
+      overscroll-behavior: none;
     }
 
     html[data-theme="dark"] body {
@@ -332,6 +337,10 @@
       overflow-y: auto;
       scrollbar-gutter: stable;
       transition: opacity 0.18s ease, padding 0.18s ease;
+      /* Liste en üstte/altta sınırına gelince kaydırma dışa (sayfaya)
+         "sızıp" tüm ekranı zıplatmasın diye kaydırma bu panelin içinde
+         tutulur. */
+      overscroll-behavior: contain;
     }
 
     .right {
@@ -778,6 +787,7 @@
       min-height: 0;
       overflow: auto;
       padding: 14px 16px 20px;
+      overscroll-behavior: contain;
     }
 
     .detail-section {
