@@ -10,12 +10,11 @@
   <title>Direniş Haritası</title>
   <script>
     (function () {
-      var appVersion = "20260720-android-cache-reset";
       try {
         var url = new URL(window.location.href);
-        if (/^https?:$/.test(url.protocol) && url.searchParams.get("v") !== appVersion) {
-          url.searchParams.set("v", appVersion);
-          window.location.replace(url.toString());
+        if (/^https?:$/.test(url.protocol) && url.searchParams.has("v")) {
+          url.searchParams.delete("v");
+          window.history.replaceState(null, "", url.pathname + url.search + url.hash);
         }
       } catch {}
     })();
