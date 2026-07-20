@@ -3492,11 +3492,6 @@
 
       <section class="map-stage" aria-label="Coğrafi istihbarat">
         <div id="map"></div>
-        <div class="map-hud">
-          <button id="fitFiltered" class="hud-button" type="button">Görüneni Sığdır</button>
-          <button id="focusTurkey" class="hud-button" type="button">Türkiye</button>
-          <button id="reloadPage" class="hud-button mobile-only-action" type="button">Sayfayı Yenile</button>
-        </div>
         <div class="map-summary">
           <button class="mini-stat" type="button" data-stat-filter="active"><span>Aktif direnişler</span><strong id="activeCount">0</strong></button>
         </div>
@@ -3617,9 +3612,23 @@
       };
     })();
 
-    if (!window.matchMedia || !window.matchMedia("(max-width: 900px), (hover: none), (pointer: coarse)").matches) {
-      window.__leafletReady = window.__loadLeaflet();
-    }
+    window.__leafletReady = new Promise(function (resolve) {
+      function startLoad() {
+        window.setTimeout(function () {
+          if (typeof window.__loadLeaflet !== "function") { resolve(false); return; }
+          window.__loadLeaflet().then(resolve).catch(function () { resolve(false); });
+        }, window.matchMedia && window.matchMedia("(max-width: 900px), (hover: none), (pointer: coarse)").matches ? 180 : 0);
+      }
+      function scheduleLoad() {
+        if ("requestIdleCallback" in window) window.requestIdleCallback(startLoad, { timeout: 700 });
+        else startLoad();
+      }
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", scheduleLoad, { once: true });
+      } else {
+        scheduleLoad();
+      }
+    });
   </script>
   <script>
     const SHEET_ID = "1wuzkNQcQiMKGWWB0l4GfZNfspA0Xwk6NFRMNpDDPlLk";
@@ -3639,6 +3648,7 @@
     const GEOCODE_CACHE_KEY = "sinif-atlasi-adres-konum-v2";
     const MEDIA_CACHE_MAX_AGE_MS = 6 * 60 * 60 * 1000;
     const MEDIA_REFRESH_MS = 90000;
+    const DATA_REFRESH_MS = 15 * 60 * 1000;
     const MEDIA_PREFETCH_LIMIT = 10;
     const MEDIA_PREFETCH_DELAY_MS = 400;
     const NEWS_LOCALES = [
@@ -3773,9 +3783,6 @@
       activeCount: document.getElementById("activeCount"),
       caseTitle: document.getElementById("caseTitle"),
       caseMeta: document.getElementById("caseMeta"),
-      fitFiltered: document.getElementById("fitFiltered"),
-      focusTurkey: document.getElementById("focusTurkey"),
-      reloadPage: document.getElementById("reloadPage"),
       closePanel: document.getElementById("closePanel"),
       favoriteCase: document.getElementById("favoriteCase"),
       downloadCase: document.getElementById("downloadCase"),
@@ -3812,7 +3819,6 @@
     // böylece veri (liste, istatistik, detay) Leaflet'i beklemeden anında görünür.
     // Leaflet gelirse aşağıda gerçek haritaya yükseltilir; hiç gelmezse mesaj kalır.
     let HAS_LEAFLET = false;
-    let MAP_LOAD_REQUESTED = false;
     let map, markerLayer;
     function installStubMap() {
       const noop = function () { return noopLayer; };
@@ -3861,64 +3867,6 @@
       if (mapEl && !mapEl.querySelector(".map-fallback-msg")) {
         mapEl.innerHTML = '<div class="map-fallback-msg" style="display:flex;align-items:center;justify-content:center;height:100%;padding:24px;text-align:center;color:var(--muted);font-size:14px;line-height:1.5">Harita katmanı yüklenemedi (ağ/CDN erişimi engellenmiş olabilir).<br>Mücadele kayıtları ve tüm veriler soldaki listede ve panelde görüntülenmeye devam ediyor.</div>';
       }
-      if (els.fitFiltered) {
-        els.fitFiltered.textContent = "Haritayı tekrar dene";
-        els.fitFiltered.disabled = false;
-      }
-    }
-
-    function setMapButtonsLoaded() {
-      if (els.fitFiltered) {
-        els.fitFiltered.textContent = "Görüneni Sığdır";
-        els.fitFiltered.disabled = false;
-      }
-      if (els.focusTurkey) {
-        els.focusTurkey.textContent = "Türkiye";
-        els.focusTurkey.disabled = false;
-      }
-    }
-
-    function showMapDeferred() {
-      const mapEl = document.getElementById("map");
-      if (mapEl && !mapEl.querySelector(".map-deferred-msg")) {
-        mapEl.innerHTML = `
-          <div class="map-deferred-msg">
-            <div>
-              <strong>Mobil hızlı mod</strong>
-              <span>Harita Android'de sayfayı kilitlemesin diye isteğe bağlı yüklenir. Liste ve detaylar tam çalışır.</span>
-            </div>
-          </div>
-        `;
-      }
-      if (els.fitFiltered) {
-        els.fitFiltered.textContent = "Haritayı yükle";
-        els.fitFiltered.disabled = false;
-      }
-      if (els.focusTurkey && !HAS_LEAFLET) {
-        els.focusTurkey.textContent = "Veriyi yenile";
-        els.focusTurkey.disabled = false;
-      }
-    }
-
-    function requestMapLoad() {
-      if (HAS_LEAFLET) {
-        fitFiltered();
-        return;
-      }
-      MAP_LOAD_REQUESTED = true;
-      if (els.fitFiltered) {
-        els.fitFiltered.textContent = "Harita yükleniyor";
-        els.fitFiltered.disabled = true;
-      }
-      if (typeof window.__loadLeaflet !== "function") {
-        showMapUnavailable();
-        return;
-      }
-      window.__leafletReady = window.__loadLeaflet();
-      window.__leafletReady.then(function (ok) {
-        if (ok) upgradeToRealMap();
-        else showMapUnavailable();
-      }).catch(showMapUnavailable);
     }
 
     let mobileMapMode = null;
@@ -3987,14 +3935,11 @@
         : L.layerGroup();
       map.addLayer(markerLayer);
       syncMapInteractionMode();
-      setMapButtonsLoaded();
       // Veriler zaten yüklendiyse marker'ları çiz ve görünümü sığdır.
       try { if (typeof render === "function" && cases && cases.length) { render(); } } catch (e) {}
     }
 
-    if (isMobileExperience() && !MAP_LOAD_REQUESTED) {
-      showMapDeferred();
-    } else if (window.__leafletReady && typeof window.__leafletReady.then === "function") {
+    if (window.__leafletReady && typeof window.__leafletReady.then === "function") {
       window.__leafletReady.then(function (ok) {
         if (ok) { upgradeToRealMap(); } else { showMapUnavailable(); }
       });
@@ -7482,10 +7427,7 @@
     }
 
     function fitFiltered() {
-      if (!HAS_LEAFLET) {
-        requestMapLoad();
-        return;
-      }
+      if (!HAS_LEAFLET) return;
       const markers = [];
       markerByCase.forEach((items) => markers.push(...items));
       if (!markers.length) return;
@@ -7575,8 +7517,7 @@
 
     function configureRefresh() {
       if (refreshTimer) window.clearInterval(refreshTimer);
-      const ms = Number(preferences.refreshMs || 0);
-      if (ms > 0) refreshTimer = window.setInterval(refreshOnlineSources, ms);
+      refreshTimer = window.setInterval(refreshOnlineSources, DATA_REFRESH_MS);
     }
 
     els.search.addEventListener("input", () => {
@@ -7585,15 +7526,6 @@
       render();
     });
     [els.areaFilter, els.statusFilter].forEach((el) => el.addEventListener("change", render));
-    els.fitFiltered.addEventListener("click", fitFiltered);
-    els.focusTurkey.addEventListener("click", () => {
-      if (!HAS_LEAFLET) {
-        refreshOnlineSources();
-        return;
-      }
-      map.fitBounds([[35.7, 25.4], [42.2, 45.0]], { animate: !isMobileExperience() });
-    });
-    if (els.reloadPage) els.reloadPage.addEventListener("click", () => window.location.reload());
     els.closePanel.addEventListener("click", () => setPanelOpen(false));
     els.smartFilters.forEach((button) => {
       button.addEventListener("click", () => setSmartFilter(
