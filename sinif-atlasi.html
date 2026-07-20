@@ -3484,7 +3484,7 @@
         </div>
       </div>
       <label class="global-search" aria-label="Tek arama">
-        <input id="search" type="search" placeholder="Ara: Doruk Maden, Akbelen, Gebze, sendika, ekoloji..." autocomplete="off">
+        <input id="search" type="search" placeholder="Ara: direniş, şehir, sendika" autocomplete="off">
       </label>
     </header>
 
@@ -4624,9 +4624,9 @@
     let geocodeQueueRunning = false;
     let geocodeQueueTimer = null;
     function scheduleMissingGeocodeRefresh() {
-      if (!HAS_LEAFLET) return;
+      if (!HAS_LEAFLET || isMobileExperience()) return;
       if (geocodeQueueTimer) window.clearTimeout(geocodeQueueTimer);
-      const delay = isMobileExperience() ? 10000 : 6000;
+      const delay = 30000;
       geocodeQueueTimer = window.setTimeout(() => {
         geocodeQueueTimer = null;
         geocodeMissingAddressesInBackground();
@@ -4634,7 +4634,7 @@
     }
 
     async function geocodeMissingAddressesInBackground() {
-      if (isMobileExperience() && !HAS_LEAFLET) return;
+      if (!HAS_LEAFLET || isMobileExperience()) return;
       if (geocodeQueueRunning) return;
       geocodeQueueRunning = true;
       try {
@@ -4648,7 +4648,7 @@
             const result = await resolveKonumEntry(entry);
             if (result && isPlausibleCoord(result.lat, result.lng)) {
               rebuildPoints();
-              render({ fitBounds: false });
+              renderMarkers({ fitBounds: false });
             }
             await new Promise((resolve) => window.setTimeout(resolve, 1100));
           }
@@ -4988,10 +4988,11 @@
     function render(options = {}) {
       if (!filtersReady) populateFilters();
       const rows = filteredCases();
+      if (rows.length && !rows.some((row) => row.id === selectedId)) selectedId = rows[0].id;
+      if (!rows.length) selectedId = null;
       renderMarkers({ fitBounds: options.fitBounds });
       renderList(rows);
       renderStats(rows);
-      if (!selectedId && rows.length) selectedId = rows[0].id;
       renderDetail();
     }
 
@@ -5113,7 +5114,6 @@
         hydratePressLinkImages(row);
       } else {
         stopPressAutoplay();
-        if (activeTab === "summary" && els.detailPanel.classList.contains("open")) hydrateSummaryNews(row);
       }
     }
 
@@ -5452,13 +5452,6 @@
           ${durationClaim(row)}
           ${claim("Eylem biçimi", value(row, fields.method))}
           ${claim("Bilgiler", value(row, fields.latest))}
-          <section class="summary-news-card" aria-label="Bu direnişe ait son haberler">
-            <div class="summary-news-head">
-              <h3>Son 3 alakalı haber</h3>
-              <span id="summaryNewsMeta">Kart açıldığında güncellenir</span>
-            </div>
-            <div id="summaryNews" class="live-results"><div class="loading">Haber özeti hazırlanıyor...</div></div>
-          </section>
         </div>
       `;
     }
