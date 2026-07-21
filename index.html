@@ -4009,6 +4009,7 @@
         mapEl.style.overscrollBehavior = "contain";
       }
       setHandler(map.dragging, true);
+      setHandler(map.scrollWheelZoom, true);
       setHandler(map.touchZoom, true);
       setHandler(map.doubleClickZoom, true);
       setHandler(map.boxZoom, !mobile);
@@ -4034,7 +4035,9 @@
         boxZoom: !mobile,
         keyboard: !mobile,
         tap: true,
-        scrollWheelZoom: false,
+        scrollWheelZoom: true,
+        wheelDebounceTime: 32,
+        wheelPxPerZoomLevel: 80,
         preferCanvas: true,
         fadeAnimation: !mobile,
         zoomAnimation: !mobile,
