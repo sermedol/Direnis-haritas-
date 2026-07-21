@@ -4040,9 +4040,16 @@
       map.addLayer(markerLayer);
       map.on("popupopen", () => setMapPopupOpen(true));
       map.on("popupclose", () => setMapPopupOpen(false));
+      map.on("click", closeDetailFromMapBackground);
       syncMapInteractionMode();
-      // Veriler zaten yüklendiyse marker'ları çiz ve görünümü sığdır.
-      try { if (typeof render === "function" && cases && cases.length) { render(); } } catch (e) {}
+      // Veriler zaten yüklendiyse marker'ları çiz; görünüm yalnızca kullanıcı
+      // "Görüneni Sığdır" düğmesine bastığında değiştirilir.
+      try {
+        if (typeof render === "function" && cases && cases.length) {
+          render();
+          scheduleMissingGeocodeRefresh();
+        }
+      } catch (e) {}
     }
 
     if (window.__leafletReady && typeof window.__leafletReady.then === "function") {
@@ -4578,115 +4585,90 @@
       return extractAddressFromEntry(konumEntriesFor(row)[0] || "");
     }
 
+    function exactCoordinate(latRaw, lngRaw, label = "", source = "direct-coordinate") {
+      const lat = Number(String(latRaw).replace(",", "."));
+      const lng = Number(String(lngRaw).replace(",", "."));
+      if (!isPlausibleCoord(lat, lng)) return null;
+      const point = { lat, lng, source, exact: true };
+      const cleanLabel = humanLocationText(label || "");
+      if (cleanLabel) point.label = cleanLabel;
+      return point;
+    }
+
+    function parseCoordPair(text, label = "") {
+      const pair = String(text || "").match(/^\s*(-?\d{1,3}(?:[.,]\d+)?)\s*[,;]\s*(-?\d{1,3}(?:[.,]\d+)?)\s*$/);
+      return pair ? exactCoordinate(pair[1], pair[2], label) : null;
+    }
+
     // Bir metinde/linkte doğrudan gömülü koordinat varsa (Google'ın çözülmüş
-    // "…/@enlem,boylam,…" ya da "…!3denlem!4dboylam…" biçimi, ya da düz
-    // "enlem,boylam" metni) ağa hiç gitmeden anında ayrıştırır.
+    // "…/@enlem,boylam,…" ya da "…!3denlem!4dboylam…" biçimi, Google Maps
+    // query/ll/center parametreleri, ya da düz "enlem,boylam" metni) ağa
+    // hiç gitmeden anında ayrıştırır.
     function parseCoordFromText(text) {
       const s = String(text || "");
       const pinMatch = s.match(/!3d(-?\d{1,3}(?:\.\d+)?)!4d(-?\d{1,3}(?:\.\d+)?)/);
-      if (pinMatch) {
-        const lat = Number(pinMatch[1]);
-        const lng = Number(pinMatch[2]);
-        if (isPlausibleCoord(lat, lng)) return { lat, lng };
-      }
+      if (pinMatch) return exactCoordinate(pinMatch[1], pinMatch[2]);
       const atMatch = s.match(/@(-?\d{1,3}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)/);
-      if (atMatch) {
-        const lat = Number(atMatch[1]);
-        const lng = Number(atMatch[2]);
-        if (isPlausibleCoord(lat, lng)) return { lat, lng };
+      if (atMatch) return exactCoordinate(atMatch[1], atMatch[2]);
+      if (/^https?:\/\//i.test(s)) {
+        try {
+          const url = new URL(s);
+          for (const name of ["query", "q", "ll", "center", "sll", "daddr", "saddr", "destination", "origin"]) {
+            const coord = parseCoordPair(url.searchParams.get(name));
+            if (coord) return coord;
+          }
+        } catch (e) {}
       }
       const plainMatch = s.match(/(-?\d{1,3}(?:[.,]\d+)?)\s*[,;]\s*(-?\d{1,3}(?:[.,]\d+)?)/);
-      if (plainMatch) {
-        const lat = Number(plainMatch[1].replace(",", "."));
-        const lng = Number(plainMatch[2].replace(",", "."));
-        if (isPlausibleCoord(lat, lng)) return { lat, lng };
-      }
+      if (plainMatch) return exactCoordinate(plainMatch[1], plainMatch[2]);
       return null;
     }
 
     const GEOCODE_RETRY_MS = 24 * 60 * 60 * 1000;
-    function isUsableGeocodeEntry(entry) {
-      // Başarılı sonuç: {lat,lng} kalıcı olarak güvenilir kabul edilir.
-      // Başarısız deneme: 24 saat içinde tekrar denenmesin diye zaman
-      // damgasıyla saklanır, ama süre dolunca yeniden denenir (worker
-      // güncellenmiş veya geçici bir sorun düzelmiş olabilir).
-      if (!entry) return false;
-      if (Number.isFinite(entry.lat) && Number.isFinite(entry.lng)) return true;
-      return Boolean(entry.failedAt) && (Date.now() - entry.failedAt < GEOCODE_RETRY_MS);
+    function isRecentFailedGeocodeEntry(entry) {
+      return Boolean(entry && entry.failedAt && (Date.now() - entry.failedAt < GEOCODE_RETRY_MS));
     }
 
-    // Sayfadaki ham "Konum" metni genelde bina/kapı numarası ve posta kodu
-    // içeren tam bir açık adres ("Adres: Yenişehir, Millet Cd. No:38, 34912
-    // Pendik/İstanbul") — Nominatim bu kadar detaylı sokak adreslerini
-    // çoğu zaman bulamıyor. Bu yüzden giderek sadeleşen adaylar üretilir:
-    // önce tam metin, sonra bina no/posta kodu silinmiş hali, sonra
-    // "İlçe/İl" -> "İlçe, İl" düzeltmesi, en son sadece ilçe+il.
-    function geocodeCandidates(rawAddress) {
-      const text = rawAddress.trim().replace(/^[^:]{0,60}adres[^:]{0,40}:\s*/i, "");
-      const candidates = [text];
-
-      const noBuilding = text
-        .replace(/\bNo:?\s*\d+(?:\/\d+)?[a-zçğıöşü]?\b/gi, "")
-        .replace(/\b(?:İç Kapı|Ic Kapi|Kat)\s*(?:No:?)?\s*\d+[a-zçğıöşü]?\b/gi, "")
-        .replace(/\b\d{5}\b/g, "")
-        .replace(/\s{2,}/g, " ")
-        .replace(/,\s*,/g, ",")
-        .replace(/^,\s*|,\s*$/g, "")
-        .trim();
-      if (noBuilding && noBuilding !== text) candidates.push(noBuilding);
-
-      const slashFixed = noBuilding
-        .replace(/([A-Za-zÇĞİIıÖŞÜçğıöşü]+)\/([A-Za-zÇĞİIıÖŞÜçğıöşü]+)\s*$/, "$1, $2")
-        .trim();
-      if (slashFixed && slashFixed !== noBuilding) candidates.push(slashFixed);
-
-      const parts = slashFixed.split(",").map((part) => part.trim()).filter(Boolean);
-      if (parts.length > 2) candidates.push(parts.slice(-2).join(", "));
-      // En agresif son çare: sokak/cadde adı çoğu zaman Nominatim'de yok —
-      // sadece son parça (genelde "ilçe il ülke") çoğunlukla bulunabiliyor.
-      if (parts.length > 1) candidates.push(parts[parts.length - 1]);
-
-      // Virgülsüz veya az virgüllü adreslerde son çare: kelime bazlı sondan
-      // kısaltma (çoğu adres "... İlçe İl Türkiye" ile bitiyor).
-      const words = noBuilding.replace(/,/g, " ").split(/\s+/).filter(Boolean);
-      if (words.length > 3) candidates.push(words.slice(-3).join(" "));
-      if (words.length > 2) candidates.push(words.slice(-2).join(" "));
-
-      return [...new Set(candidates)].filter((candidate) => candidate.length >= 4);
-    }
-
-    async function geocodeAddress(address) {
-      const key = norm(address);
-      if (isUsableGeocodeEntry(geocodeCache[key])) return geocodeCache[key];
-      const candidates = geocodeCandidates(address);
-      let result = null;
-      for (let i = 0; i < candidates.length; i++) {
-        try {
-          const response = await fetchWithTimeout(
-            `https://sinif-atlasi.feyzakayaalti.workers.dev/?geocode=${encodeURIComponent(candidates[i])}`,
-            {}, 8000, { background: true }
-          );
-          const data = await response.json();
-          if (data && data.result && isPlausibleCoord(data.result.lat, data.result.lng)) {
-            result = { ...data.result, label: humanLocationText(data.result.label || candidates[i]) };
-            break;
-          }
-        } catch {}
-        if (i < candidates.length - 1) {
-          await new Promise((resolve) => window.setTimeout(resolve, 400));
-        }
-      }
-      geocodeCache[key] = result || { failedAt: Date.now() };
-      saveGeocodeCache();
-      return geocodeCache[key];
+    function isExactGeocodeEntry(entry) {
+      return Boolean(
+        entry &&
+        isPlausibleCoord(entry.lat, entry.lng) &&
+        (entry.exact === true || entry.source === "direct-coordinate" || entry.source === "google-link")
+      );
     }
 
     function isShortMapsLink(text) {
       return /^https?:\/\/(maps\.app\.goo\.gl|goo\.gl\/maps)\//i.test(String(text || "").trim());
     }
 
-    // Google'ın kısa paylaşım linkini (maps.app.goo.gl/... gibi) worker
-    // üzerinden çözer — worker yönlendirmeyi (redirect) takip edip son
+    function cachedExactPointForEntry(entry) {
+      const cached = geocodeCache[norm(entry)];
+      if (!cached || !isPlausibleCoord(cached.lat, cached.lng)) return null;
+      if (isExactGeocodeEntry(cached)) return cached;
+      // Önceki sürümlerde kısa Google Maps linkleri worker ile çözülüp
+      // kaynak etiketi olmadan saklanmış olabilir; bunlar da linkin kendi
+      // hedefinden gelen kesin koordinatlardır. Uzun adres arama linklerinin
+      // eski önbelleği ise kabul edilmez.
+      if (isShortMapsLink(entry)) return { ...cached, source: "google-link", exact: true };
+      return null;
+    }
+
+    function cacheExactPoint(key, point) {
+      if (!point || !isPlausibleCoord(point.lat, point.lng)) return null;
+      const exact = {
+        ...point,
+        label: humanLocationText(point.label || ""),
+        source: point.source || "google-link",
+        exact: true
+      };
+      if (!exact.label) delete exact.label;
+      geocodeCache[key] = exact;
+      saveGeocodeCache();
+      return geocodeCache[key];
+    }
+
+    // Google Maps paylaşım/link hedefini worker üzerinden çözer; worker
+    // yönlendirmeyi (redirect) takip edip son
     // URL'deki koordinatı çıkarır (bkz. cloudflare-worker.js: handleResolveLink).
     // Tarayıcı bunu CORS yüzünden doğrudan yapamaz.
     async function resolveShortMapsLink(link) {
@@ -4697,34 +4679,33 @@
         );
         const data = await response.json();
         if (data && data.result && isPlausibleCoord(data.result.lat, data.result.lng)) {
-          return { ...data.result, label: humanLocationText(data.result.label || link) };
+          return {
+            ...data.result,
+            label: humanLocationText(data.result.label || link),
+            source: "google-link",
+            exact: true
+          };
         }
       } catch {}
       return null;
     }
 
-    // Tek bir "Konum" girdisini (link ya da düz metin) koordinata çevirir;
-    // sonuç girdinin kendi metnine göre önbelleğe alınır.
+    // Tek bir "Konum" girdisini yalnızca kesin koordinata çevirir. Adres
+    // metni geocode edilmez, il/ilçe merkezi üretilmez, temsilî fallback
+    // kullanılmaz.
     async function resolveKonumEntry(entry) {
       const key = norm(entry);
-      if (isUsableGeocodeEntry(geocodeCache[key])) return geocodeCache[key];
       const direct = parseCoordFromText(entry);
-      if (direct) {
-        geocodeCache[key] = direct;
-        saveGeocodeCache();
-        return direct;
-      }
+      if (direct) return cacheExactPoint(key, direct);
+      const cached = cachedExactPointForEntry(entry);
+      if (cached) return cacheExactPoint(key, cached);
+      if (isRecentFailedGeocodeEntry(geocodeCache[key])) return geocodeCache[key];
       let result = null;
       if (isShortMapsLink(entry)) {
         result = await resolveShortMapsLink(entry.trim());
-      } else {
-        const address = extractAddressFromEntry(entry);
-        if (address.length >= 4) {
-          const geocoded = await geocodeAddress(address);
-          if (geocoded && Number.isFinite(geocoded.lat) && Number.isFinite(geocoded.lng)) result = geocoded;
-        }
       }
-      geocodeCache[key] = result || { failedAt: Date.now() };
+      if (result) return cacheExactPoint(key, result);
+      geocodeCache[key] = { failedAt: Date.now(), source: "no-exact-coordinate" };
       saveGeocodeCache();
       return geocodeCache[key];
     }
@@ -4732,9 +4713,9 @@
     let geocodeQueueRunning = false;
     let geocodeQueueTimer = null;
     function scheduleMissingGeocodeRefresh() {
-      if (!HAS_LEAFLET || isMobileExperience()) return;
+      if (!HAS_LEAFLET) return;
       if (geocodeQueueTimer) window.clearTimeout(geocodeQueueTimer);
-      const delay = 30000;
+      const delay = isMobileExperience() ? 300 : 200;
       geocodeQueueTimer = window.setTimeout(() => {
         geocodeQueueTimer = null;
         geocodeMissingAddressesInBackground();
@@ -4742,25 +4723,52 @@
     }
 
     async function geocodeMissingAddressesInBackground() {
-      if (!HAS_LEAFLET || isMobileExperience()) return;
+      if (!HAS_LEAFLET) return;
       if (geocodeQueueRunning) return;
       geocodeQueueRunning = true;
       try {
         const seen = new Set();
+        const pending = [];
         for (const row of cases) {
           for (const entry of konumEntriesFor(row)) {
             if (entry.length < 4) continue;
             const key = norm(entry);
-            if (seen.has(key) || isUsableGeocodeEntry(geocodeCache[key]) || parseCoordFromText(entry)) continue;
+            if (
+              seen.has(key) ||
+              parseCoordFromText(entry) ||
+              cachedExactPointForEntry(entry) ||
+              isRecentFailedGeocodeEntry(geocodeCache[key]) ||
+              !isShortMapsLink(entry)
+            ) continue;
             seen.add(key);
-            const result = await resolveKonumEntry(entry);
-            if (result && isPlausibleCoord(result.lat, result.lng)) {
-              rebuildPoints();
-              renderMarkers({ fitBounds: false });
-            }
-            await new Promise((resolve) => window.setTimeout(resolve, 1100));
+            pending.push(entry);
           }
         }
+        if (!pending.length) return;
+        const mobile = isMobileExperience();
+        const concurrency = Math.min(mobile ? 3 : 4, pending.length);
+        let cursor = 0;
+        let changed = 0;
+        const renderIfNeeded = (force = false) => {
+          if (!changed) return;
+          if (!force && changed % (mobile ? 4 : 6) !== 0) return;
+          rebuildPoints();
+          renderMarkers({ fitBounds: false });
+        };
+        const runWorker = async () => {
+          while (cursor < pending.length) {
+            const entry = pending[cursor];
+            cursor += 1;
+            const result = await resolveKonumEntry(entry);
+            if (isExactGeocodeEntry(result)) {
+              changed += 1;
+              renderIfNeeded(false);
+            }
+            await new Promise((resolve) => window.setTimeout(resolve, mobile ? 40 : 25));
+          }
+        };
+        await Promise.all(Array.from({ length: concurrency }, runWorker));
+        renderIfNeeded(true);
       } finally {
         geocodeQueueRunning = false;
       }
@@ -4781,44 +4789,32 @@
       if (latKey && lngKey) {
         const lat = Number(String(row[latKey]).replace(",", "."));
         const lng = Number(String(row[lngKey]).replace(",", "."));
-        if (isPlausibleCoord(lat, lng)) return [{ label: humanLocationText(value(row, fields.location)), lat, lng }];
+        const point = exactCoordinate(lat, lng, humanLocationText(value(row, fields.location)));
+        if (point) return [point];
       }
       const entries = konumEntriesFor(row);
       if (!entries.length) return null;
       const locationText = humanLocationText(value(row, fields.location));
       const resolved = [];
       entries.forEach((entry, index) => {
-        const cached = parseCoordFromText(entry) || geocodeCache[norm(entry)];
+        const cached = parseCoordFromText(entry) || cachedExactPointForEntry(entry);
         if (cached && isPlausibleCoord(cached.lat, cached.lng)) {
           const cachedLabel = humanLocationText(cached.label || "");
           const label = cachedLabel || (entries.length > 1 ? `${locationText} (${index + 1})` : locationText);
-          resolved.push({ label, lat: cached.lat, lng: cached.lng });
+          resolved.push({
+            label,
+            lat: cached.lat,
+            lng: cached.lng,
+            source: cached.source || "direct-coordinate",
+            exact: cached.exact === true || Boolean(cached.source)
+          });
         }
       });
       return resolved.length ? resolved : null;
     }
 
-    function fuzzyLocationPoints(locationText) {
-      const targetTokens = new Set(norm(locationText).split(/[^a-z0-9]+/i).filter((token) => token.length > 2));
-      if (!targetTokens.size) return [];
-      let bestKey = null;
-      let bestScore = 0;
-      Object.keys(LOCATION_POINTS).forEach((key) => {
-        const keyTokens = new Set(norm(key).split(/[^a-z0-9]+/i).filter((token) => token.length > 2));
-        if (!keyTokens.size) return;
-        const overlap = Array.from(keyTokens).filter((token) => targetTokens.has(token)).length;
-        const score = overlap / keyTokens.size;
-        if (score > bestScore) {
-          bestScore = score;
-          bestKey = key;
-        }
-      });
-      return bestScore >= 0.5 ? LOCATION_POINTS[bestKey] : [];
-    }
-
     function pointsFor(row) {
-      const locationText = value(row, fields.location);
-      return explicitPoint(row) || LOCATION_POINTS[locationText] || fuzzyLocationPoints(locationText) || [];
+      return explicitPoint(row) || [];
     }
 
     function organizations(row) {
@@ -5008,7 +5004,7 @@
         }
         markerRenderHandle = null;
         flushPendingMapReveal();
-        if (options.fitBounds !== false) fitBoundsForMarkers(markers, 0.12, 7);
+        if (options.fitBounds === true) fitBoundsForMarkers(markers, 0.12, 7);
       };
       drawChunk();
       return markers;
@@ -5138,7 +5134,7 @@
         // yönlendirme doğrudan bu(nlar) olmalı, koordinattan yeniden
         // türetilmiş bir link değil.
         coordRows = directUrls.map((url, index) => {
-          const cached = geocodeCache[norm(url)];
+          const cached = cachedExactPointForEntry(url);
           const cachedLabel = humanLocationText((cached && cached.label) || "");
           const label = cachedLabel || (directUrls.length > 1 ? `${locationText} (${index + 1})` : null);
           return `
@@ -5190,6 +5186,17 @@
       els.detailPanel.classList.toggle("open", open);
       els.detailPanel.style.removeProperty("transform");
       if (!open) stopMediaRefresh();
+    }
+
+    function closeDetailFromMapBackground(event) {
+      if (!els.detailPanel.classList.contains("open")) return;
+      const target = event && event.originalEvent && event.originalEvent.target;
+      if (
+        target &&
+        target.closest &&
+        target.closest(".leaflet-marker-icon, .leaflet-popup, .leaflet-control")
+      ) return;
+      setPanelOpen(false);
     }
 
     function syncTabs() {
