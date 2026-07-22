@@ -2,3 +2,18 @@
 Thumbs.db
 .DS_Store
 *.log
+
+# Cloudflare Worker kaynağı: GitHub Pages aynı repodaki her dosyayı statik
+# olarak yayınladığı için bu dosya izlemeden çıkarıldı (bkz. güvenlik
+# denetimi) — yerelde düzenlemeye devam edilir, Cloudflare Dashboard'a
+# elle kopyalanır, ama artık siteden herkese açık şekilde servis edilmez.
+cloudflare-worker.js
+
+# Secret/ortam dosyaları — bu projede şu an yok ama ileride yanlışlıkla
+# eklenmesin diye önceden engellenir.
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+wrangler.local.toml
